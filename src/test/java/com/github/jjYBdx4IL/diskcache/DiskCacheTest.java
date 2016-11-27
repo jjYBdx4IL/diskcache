@@ -1,5 +1,7 @@
 package com.github.jjYBdx4IL.diskcache;
 
+import java.io.IOException;
+
 import static org.junit.Assert.*;
 import org.junit.Test;
 import org.slf4j.Logger;
@@ -15,8 +17,20 @@ public class DiskCacheTest {
     private static final DiskCache cache = new DiskCache(null, null, null, true);
 
     @Test
-    public void testSetExpirySecs() {
-        cache.setExpirySecs(86400);
+    public void testSetExpirySecs() throws IOException {
+        try {
+            cache.put("1", "1".getBytes());
+            cache.setExpirySecs(0);
+            assertNull(cache.get("1"));
+        } finally {
+            cache.setExpirySecs(DiskCache.DEFAULT_EXPIRY_SECS);
+        }
+    }
+
+    @Test
+    public void testDoublePut() throws Exception {
+        cache.put("testDoublePut", "1234".getBytes());
+        cache.put("testDoublePut", "1234".getBytes());
     }
 
     @Test

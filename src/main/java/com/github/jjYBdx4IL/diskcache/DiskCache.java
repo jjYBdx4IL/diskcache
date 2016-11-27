@@ -58,15 +58,39 @@ public class DiskCache {
     /**
      *
      *
-     * @param parentDir may be null. in that case databases get crated either below ~/.config/...DiskCache or &lt;pwd>/target/...DiskCache if run as part of a maven test.
-     * @param dbName the database name identifying the database on disk, ie. the directory below parentDir where Derby stores the database's data. may be null, in which case the default "diskcachedb" is used.
+     * @param parentDir may be null. in that case databases get crated either below ~/.config/...DiskCache or
+     * &lt;pwd>/target/...DiskCache if run as part of a maven test.
+     * @param dbName the database name identifying the database on disk, ie. the directory below parentDir
+     * where Derby stores the database's data. may be null, in which case the default "diskcachedb" is used.
      * @param tableName may be null. In that case the default "cachedata" is used.
      */
     public DiskCache(File parentDir, String dbName, String tableName) {
         this(parentDir, dbName, tableName, false);
     }
 
+    public DiskCache(String dbName) {
+        this(null, dbName, null, false);
+    }
+
     public DiskCache(File parentDir, String dbName, String tableName, boolean reinit) {
+        if (dbName != null) {
+            if (dbName.contains(File.separator)) {
+                throw new IllegalArgumentException("the db name must not contain " + File.separator);
+            }
+            if (dbName.contains("/")) {
+                throw new IllegalArgumentException("the db name must not contain /");
+            }
+            if (dbName.contains("\\")) {
+                throw new IllegalArgumentException("the db name must not contain \\");
+            }
+            if (dbName.contains(":")) {
+                throw new IllegalArgumentException("the db name must not contain :");
+            }
+            if (dbName.contains(";")) {
+                throw new IllegalArgumentException("the db name must not contain ;");
+            }
+        }
+
         httpclient = HttpClients.createDefault();
         this.parentDir = parentDir != null ? parentDir : getDefaultParentDir();
         this.dbName = dbName != null ? dbName : DEFAULT_DB_NAME;
@@ -136,6 +160,10 @@ public class DiskCache {
             LOG.warn("The data for key " + key + " is " + data.length + " bytes long. It is not recommended to store large data chunks using " + DiskCache.class.getName());
         }
         try {
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM " + tableName + " WHERE cachekey = ?")) {
+                ps.setString(1, key);
+                ps.execute();
+            }
             Blob blob = conn.createBlob();
             try (PreparedStatement ps = conn.prepareStatement("INSERT INTO " + tableName + "(cachekey,lmod,cachedata) VALUES(?,?,?)")) {
                 ps.setString(1, key);
@@ -159,7 +187,7 @@ public class DiskCache {
     }
 
     /**
-     * 
+     *
      * @param key
      * @return returns null if the key was not found or the data has expired.
      * @throws IOException
