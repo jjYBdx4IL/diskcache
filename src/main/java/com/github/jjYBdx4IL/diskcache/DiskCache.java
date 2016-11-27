@@ -149,10 +149,22 @@ public class DiskCache {
     }
 
     public void put(URL url, byte[] data) throws IOException {
+        if (url == null) {
+            throw new IllegalArgumentException();
+        }
         put(url.toExternalForm(), data);
     }
 
     public void put(String key, byte[] data) throws IOException {
+        if (key == null) {
+            throw new IllegalArgumentException();
+        }
+        if (data == null) {
+            throw new IllegalArgumentException();
+        }
+        if (key.isEmpty()) {
+            throw new IllegalArgumentException();
+        }
         if (key.length() > MAX_VARCHAR_LEN) {
             throw new IllegalArgumentException("key too long: " + key);
         }

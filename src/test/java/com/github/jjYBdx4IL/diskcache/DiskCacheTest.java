@@ -33,6 +33,27 @@ public class DiskCacheTest {
         cache.put("testDoublePut", "1234".getBytes());
     }
 
+    @Test(expected = IllegalArgumentException.class)
+    public void testPutNullKey() throws IOException {
+        cache.put((String)null, "123".getBytes());
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void testPutNullValue() throws IOException {
+        cache.put("testPutNullValue", (byte[])null);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void testPutEmptyKey() throws IOException {
+        cache.put("", "123".getBytes());
+    }
+
+    @Test
+    public void testPutEmptyValue() throws IOException {
+        cache.put("testPutEmptyValue", "".getBytes());
+        assertArrayEquals("".getBytes(), cache.get("testPutEmptyValue"));
+    }
+
     @Test
     public void testPutGet() throws Exception {
         assertNull(cache.get("123"));
