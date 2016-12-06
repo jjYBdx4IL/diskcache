@@ -195,7 +195,11 @@ public class DiskCache {
     }
 
     public byte[] get(URL url) throws IOException {
-        return get(url.toExternalForm());
+        return get(url.toExternalForm(), expiryMillis);
+    }
+
+    public byte[] get(URL url, long _expiryMillis) throws IOException {
+        return get(url.toExternalForm(), _expiryMillis);
     }
 
     /**
@@ -205,9 +209,13 @@ public class DiskCache {
      * @throws IOException
      */
     public byte[] get(String key) throws IOException {
+        return get(key, expiryMillis);
+    }
+
+    public byte[] get(String key, long _expiryMillis) throws IOException {
         try (PreparedStatement ps = conn.prepareStatement("SELECT cachedata FROM " + tableName + " WHERE cachekey = ? AND lmod > ?")) {
             ps.setString(1, key);
-            ps.setLong(2, System.currentTimeMillis() - expiryMillis);
+            ps.setLong(2, System.currentTimeMillis() - _expiryMillis);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     Blob value = rs.getBlob(1);
@@ -225,7 +233,11 @@ public class DiskCache {
     }
 
     public byte[] retrieve(URL url) throws IOException {
-        byte[] data = get(url);
+        return retrieve(url, expiryMillis);
+    }
+
+    public byte[] retrieve(URL url, long _expiryMillis) throws IOException {
+        byte[] data = get(url, _expiryMillis);
         if (data != null) {
             LOG.debug("returning cached data for " + url.toExternalForm());
             return data;
@@ -249,8 +261,12 @@ public class DiskCache {
     }
 
     public byte[] retrieve(String url) throws IOException {
+        return retrieve(url, expiryMillis);
+    }
+
+    public byte[] retrieve(String url, long _expiryMillis) throws IOException {
         try {
-            return retrieve(new URL(url));
+            return retrieve(new URL(url), _expiryMillis);
         } catch (MalformedURLException ex) {
             throw new IOException(ex);
         }

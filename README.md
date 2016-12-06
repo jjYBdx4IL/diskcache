@@ -9,4 +9,4 @@
 
 --
 [![Build Status](https://travis-ci.org/jjYBdx4IL/diskcache.png?branch=master)](https://travis-ci.org/jjYBdx4IL/diskcache)
-devel/java/github/diskcache@7123
+devel/java/github/diskcache@7132
