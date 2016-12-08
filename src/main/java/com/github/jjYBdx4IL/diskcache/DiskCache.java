@@ -1,26 +1,29 @@
 package com.github.jjYBdx4IL.diskcache;
 
+import com.github.jjYBdx4IL.diskcache.jpa.DiskCacheEntry;
+import com.github.jjYBdx4IL.diskcache.jpa.DiskCacheQueryFactory;
+
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.MalformedURLException;
 import java.net.URL;
-import java.sql.Blob;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+
+import javax.persistence.EntityManager;
+import javax.persistence.EntityManagerFactory;
+import javax.persistence.EntityTransaction;
+import javax.persistence.Persistence;
+import javax.persistence.TypedQuery;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
-import org.apache.http.HttpResponse;
-import org.apache.http.client.HttpClient;
-import org.apache.http.client.methods.HttpGet;
-import org.apache.http.impl.client.HttpClients;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,12 +34,12 @@ import org.slf4j.LoggerFactory;
 public class DiskCache {
 
     private static final Logger LOG = LoggerFactory.getLogger(DiskCache.class);
-    public static final String DEFAULT_TABLE_NAME = "cachedata";
     public static final String DEFAULT_DB_NAME = "diskcachedb";
-    public static final int MAX_VARCHAR_LEN = 32672;
+    public static final int MAX_KEY_LENGTH = 1024;
     public static final long DEFAULT_EXPIRY_SECS = 86400;
-    public static final String DERBY_LOG_PROPNAME = "derby.stream.error.file";
-    public static final long DATA_WARN_LEN = 100 * 1024 * 1024;
+    public static final String INVALID_DBNAME_CHARS = File.separatorChar + "/\\;:";
+    // store every data file larger than this in its separate file on disk
+    public static final long MAX_BLOB_SIZE = 32 * 1024;
 
     private static File getDefaultParentDir() {
         File configDir = new File(System.getProperty("user.home"), ".config");
@@ -48,12 +51,15 @@ public class DiskCache {
         return f;
     }
 
-    private final Connection conn;
-    private long expiryMillis = DEFAULT_EXPIRY_SECS * 1000L;
-    private final HttpClient httpclient;
-    private final String tableName;
+    protected long expiryMillis = DEFAULT_EXPIRY_SECS * 1000L;
     private final String dbName;
     private final File parentDir;
+    private final File fileStorageDir;
+
+    protected final Map<String, String> props = new HashMap<>();
+    protected EntityManagerFactory emf = null;
+    protected EntityManager em = null;
+    protected final DiskCacheQueryFactory diskCacheQueryFactory;
 
     /**
      *
@@ -62,41 +68,26 @@ public class DiskCache {
      * &lt;pwd>/target/...DiskCache if run as part of a maven test.
      * @param dbName the database name identifying the database on disk, ie. the directory below parentDir
      * where Derby stores the database's data. may be null, in which case the default "diskcachedb" is used.
-     * @param tableName may be null. In that case the default "cachedata" is used.
      */
-    public DiskCache(File parentDir, String dbName, String tableName) {
-        this(parentDir, dbName, tableName, false);
+    public DiskCache(File parentDir, String dbName) {
+        this(parentDir, dbName, false);
     }
 
     public DiskCache(String dbName) {
-        this(null, dbName, null, false);
+        this(null, dbName, false);
     }
 
-    public DiskCache(File parentDir, String dbName, String tableName, boolean reinit) {
-        if (dbName != null) {
-            if (dbName.contains(File.separator)) {
-                throw new IllegalArgumentException("the db name must not contain " + File.separator);
-            }
-            if (dbName.contains("/")) {
-                throw new IllegalArgumentException("the db name must not contain /");
-            }
-            if (dbName.contains("\\")) {
-                throw new IllegalArgumentException("the db name must not contain \\");
-            }
-            if (dbName.contains(":")) {
-                throw new IllegalArgumentException("the db name must not contain :");
-            }
-            if (dbName.contains(";")) {
-                throw new IllegalArgumentException("the db name must not contain ;");
-            }
+    public DiskCache(File parentDir, String dbName, boolean reinit) {
+        this.dbName = dbName != null ? dbName : DEFAULT_DB_NAME;
+
+        if (StringUtils.containsAny(dbName, INVALID_DBNAME_CHARS)) {
+            throw new IllegalArgumentException("the db name must not contain " + INVALID_DBNAME_CHARS);
         }
 
-        httpclient = HttpClients.createDefault();
         this.parentDir = parentDir != null ? parentDir : getDefaultParentDir();
-        this.dbName = dbName != null ? dbName : DEFAULT_DB_NAME;
-        this.tableName = tableName != null ? tableName : DEFAULT_TABLE_NAME;
 
         final File dbDir = new File(this.parentDir, this.dbName);
+        this.fileStorageDir = new File(dbDir, "files");
 
         if (dbDir.exists() && reinit) {
             LOG.info("deleting " + dbDir.getAbsolutePath());
@@ -110,42 +101,27 @@ public class DiskCache {
         if (!dbDir.exists()) {
             dbDir.mkdirs();
         }
-
-        try {
-            final String derbyLog = new File(dbDir, "derby.log").getAbsolutePath();
-            if (!System.getProperty(DERBY_LOG_PROPNAME, "").equals(derbyLog)) {
-                LOG.info("setting derby log file to " + derbyLog);
-                System.setProperty("derby.stream.error.file", derbyLog);
-            }
-
-            // we put the derby db into the "derby/" sub directory so we can put another storage into the same structure
-            // below dbDir for large files later on.
-            final String dbLocation = new File(dbDir, "derby").getAbsolutePath().replaceAll(":", "\\:");
-            conn = DriverManager.getConnection("jdbc:derby:" + dbLocation + ";create=true");
-            final boolean tableExists;
-            try (ResultSet res = conn.getMetaData().getTables(null, "APP", this.tableName.toUpperCase(), null)) {
-                tableExists = res.next();
-            }
-            if (!tableExists) {
-                execStmt("CREATE TABLE " + this.tableName + " (ID INTEGER NOT NULL GENERATED ALWAYS AS IDENTITY (START WITH 1, INCREMENT BY 1), cachekey VARCHAR(" + MAX_VARCHAR_LEN + ") UNIQUE NOT NULL, lmod BIGINT NOT NULL, cachedata BLOB NOT NULL)");
-                execStmt("CREATE INDEX idx0 ON " + this.tableName + " (cachekey)");
-                LOG.debug("derby db initialized.");
-            }
-            LOG.info("started.");
-        } catch (SQLException ex) {
-            throw new RuntimeException(ex);
+        if (!this.fileStorageDir.exists()) {
+            this.fileStorageDir.mkdirs();
         }
+
+        final String dbLocation = new File(dbDir, "db").getAbsolutePath().replaceAll(":", "\\:");
+
+        props.put("hibernate.hbm2ddl.auto", "create");
+        props.put("hibernate.show_sql", "true");
+        props.put("javax.persistence.jdbc.driver", "org.h2.Driver");
+        props.put("javax.persistence.jdbc.url", "jdbc:h2:" + dbLocation);
+
+        emf = Persistence.createEntityManagerFactory("DiskCachePU", props);
+        em = emf.createEntityManager();
+        diskCacheQueryFactory = new DiskCacheQueryFactory(em);
+
+        LOG.info("started.");
     }
 
     public DiskCache setExpirySecs(long secs) {
         this.expiryMillis = secs * 1000L;
         return this;
-    }
-
-    private void execStmt(String s) throws SQLException {
-        try (Statement stmt = conn.createStatement()) {
-            stmt.execute(s);
-        }
     }
 
     public void put(URL url, byte[] data) throws IOException {
@@ -156,50 +132,77 @@ public class DiskCache {
     }
 
     public void put(String key, byte[] data) throws IOException {
+        if (data == null) {
+            throw new IllegalArgumentException();
+        }
+        try (ByteArrayInputStream input = new ByteArrayInputStream(data)) {
+            put(key, input);
+        }
+    }
+
+    public void put(String key, InputStream input) throws IOException {
         if (key == null) {
             throw new IllegalArgumentException();
         }
-        if (data == null) {
+        if (input == null) {
             throw new IllegalArgumentException();
         }
         if (key.isEmpty()) {
             throw new IllegalArgumentException();
         }
-        if (key.length() > MAX_VARCHAR_LEN) {
+        if (key.length() > MAX_KEY_LENGTH) {
             throw new IllegalArgumentException("key too long: " + key);
         }
-        if (data.length > DATA_WARN_LEN) {
-            LOG.warn("The data for key " + key + " is " + data.length + " bytes long. It is not recommended to store large data chunks using " + DiskCache.class.getName());
+
+        byte[] buf = new byte[(int) MAX_BLOB_SIZE + 1];
+        long size = IOUtils.read(input, buf);
+
+        DiskCacheEntry dce;
+        TypedQuery<DiskCacheEntry> results = diskCacheQueryFactory.getByUrlQuery(key);
+        if (results.getResultList().isEmpty()) {
+            dce = new DiskCacheEntry();
+            dce.url = key;
+        } else {
+            dce = results.getResultList().get(0);
         }
+
+        dce.createdAt = 0L;
+        dce.data = null;
+        dce.size = -1L;
+
+        EntityTransaction tx = em.getTransaction();
         try {
-            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM " + tableName + " WHERE cachekey = ?")) {
-                ps.setString(1, key);
-                ps.execute();
-            }
-            Blob blob = conn.createBlob();
-            try (PreparedStatement ps = conn.prepareStatement("INSERT INTO " + tableName + "(cachekey,lmod,cachedata) VALUES(?,?,?)")) {
-                ps.setString(1, key);
-                ps.setLong(2, System.currentTimeMillis());
-                try (OutputStream os = blob.setBinaryStream(1)) {
-                    IOUtils.write(data, os);
+            tx.begin();
+
+            // write data to a separate file on disk if it is larger than this
+            if (size == MAX_BLOB_SIZE + 1) {
+                em.persist(dce);
+                tx.commit();
+
+                File dataFile = new File(this.fileStorageDir, Long.toString(dce.id));
+                try (FileOutputStream fos = new FileOutputStream(dataFile, false)) {
+                    IOUtils.write(buf, fos);
+                    size += IOUtils.copyLarge(input, fos);
+                    fos.getFD().sync();
                 }
-                ps.setBlob(3, blob);
-                ps.execute();
-            } finally {
-                blob.free();
+                LOG.debug("wrote " + size + " bytes to " + dataFile.getAbsolutePath());
+
+                tx.begin();
+            } else {
+                dce.data = Arrays.copyOf(buf, (int)size);
             }
-        } catch (SQLException ex) {
-            throw new IOException(ex);
+
+            dce.createdAt = System.currentTimeMillis();
+            dce.size = size;
+            em.persist(dce);
+            tx.commit();
+
+            LOG.debug("stored " + key + " (" + size + " bytes), " + dce.toString());
+        } finally {
+            if (tx.isActive()) {
+                tx.rollback();
+            }
         }
-        LOG.debug("stored " + key);
-    }
-
-    public byte[] get(URL url) throws IOException {
-        return get(url.toExternalForm(), expiryMillis);
-    }
-
-    public byte[] get(URL url, long _expiryMillis) throws IOException {
-        return get(url.toExternalForm(), _expiryMillis);
     }
 
     /**
@@ -209,66 +212,53 @@ public class DiskCache {
      * @throws IOException
      */
     public byte[] get(String key) throws IOException {
-        return get(key, expiryMillis);
+        return get(key, this.expiryMillis);
     }
 
     public byte[] get(String key, long _expiryMillis) throws IOException {
-        try (PreparedStatement ps = conn.prepareStatement("SELECT cachedata FROM " + tableName + " WHERE cachekey = ? AND lmod > ?")) {
-            ps.setString(1, key);
-            ps.setLong(2, System.currentTimeMillis() - _expiryMillis);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    Blob value = rs.getBlob(1);
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                    try (InputStream is = value.getBinaryStream()) {
-                        IOUtils.copy(is, baos);
-                    }
-                    return baos.toByteArray();
-                }
+        try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                InputStream is = getStream(key, _expiryMillis)) {
+            if (is == null) {
+                return null;
             }
-        } catch (SQLException ex) {
-            throw new IOException(ex);
+            IOUtils.copyLarge(is, baos);
+            return baos.toByteArray();
         }
-        return null;
+    }
+    
+    /**
+     *
+     * @param key
+     * @param _expiryMillis -1 or less to ignore expiration
+     * @return
+     * @throws IOException
+     */
+    public InputStream getStream(String key, long _expiryMillis) throws IOException {
+
+        if (key == null || key.length() > MAX_KEY_LENGTH) {
+            throw new IllegalArgumentException();
+        }
+
+        TypedQuery<DiskCacheEntry> results = diskCacheQueryFactory.getByUrlQuery(key);
+        if (results.getResultList().isEmpty()) {
+            return null;
+        }
+
+        DiskCacheEntry dce = results.getResultList().get(0);
+
+        final long notBefore = System.currentTimeMillis() - _expiryMillis;
+        if (_expiryMillis >= 0L && dce.createdAt < notBefore) {
+            return null;
+        }
+
+        if (dce.data == null) {
+            return new FileInputStream(new File(this.fileStorageDir, Long.toString(dce.id)));
+        } else {
+            return new ByteArrayInputStream(dce.data);
+        }
     }
 
-    public byte[] retrieve(URL url) throws IOException {
-        return retrieve(url, expiryMillis);
-    }
-
-    public byte[] retrieve(URL url, long _expiryMillis) throws IOException {
-        byte[] data = get(url, _expiryMillis);
-        if (data != null) {
-            LOG.debug("returning cached data for " + url.toExternalForm());
-            return data;
-        }
-
-        LOG.debug("retrieving " + url.toExternalForm());
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-
-        HttpGet httpGet = new HttpGet(url.toExternalForm());
-        HttpResponse response = httpclient.execute(httpGet);
-        if (response.getStatusLine().getStatusCode() != 200) {
-            throw new IOException("url returned status code " + response.getStatusLine().getStatusCode() + ": " + url.toExternalForm());
-        }
-        try (InputStream is = response.getEntity().getContent()) {
-            IOUtils.copy(is, baos);
-        }
-
-        data = baos.toByteArray();
-        put(url, data);
-        return data;
-    }
-
-    public byte[] retrieve(String url) throws IOException {
-        return retrieve(url, expiryMillis);
-    }
-
-    public byte[] retrieve(String url, long _expiryMillis) throws IOException {
-        try {
-            return retrieve(new URL(url), _expiryMillis);
-        } catch (MalformedURLException ex) {
-            throw new IOException(ex);
-        }
+    public InputStream getStream(String key) throws IOException {
+        return getStream(key, this.expiryMillis);
     }
 }

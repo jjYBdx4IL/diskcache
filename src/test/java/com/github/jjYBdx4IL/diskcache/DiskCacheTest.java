@@ -1,8 +1,11 @@
 package com.github.jjYBdx4IL.diskcache;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,7 +17,7 @@ import org.slf4j.LoggerFactory;
 public class DiskCacheTest {
 
     private static final Logger LOG = LoggerFactory.getLogger(DiskCacheTest.class);
-    private static final DiskCache cache = new DiskCache(null, null, null, true);
+    private static final DiskCache cache = new DiskCache(null, null, true);
 
     @Test
     public void testSetExpirySecs() throws IOException {
@@ -35,12 +38,12 @@ public class DiskCacheTest {
 
     @Test(expected = IllegalArgumentException.class)
     public void testPutNullKey() throws IOException {
-        cache.put((String)null, "123".getBytes());
+        cache.put((String) null, "123".getBytes());
     }
 
     @Test(expected = IllegalArgumentException.class)
     public void testPutNullValue() throws IOException {
-        cache.put("testPutNullValue", (byte[])null);
+        cache.put("testPutNullValue", (byte[]) null);
     }
 
     @Test(expected = IllegalArgumentException.class)
@@ -64,13 +67,16 @@ public class DiskCacheTest {
     }
 
     @Test
-    public void testWebGet() throws Exception {
-        byte[] a = cache.get("https://www.google.com/");
-        byte[] b = cache.retrieve("https://www.google.com/");
-        byte[] c = cache.get("https://www.google.com/");
-        assertNull(a);
-        assertNotNull(b);
-        assertNotNull(c);
-        assertArrayEquals(b, c);
+    public void testLargeFile() throws IOException {
+        assertNull(cache.get("testLargeFile"));
+        byte[] buf = new byte[2 * (int) DiskCache.MAX_BLOB_SIZE];
+        for (int i = 0; i<buf.length; i++) {
+            buf[i] = (byte) i;
+        }
+        try (ByteArrayInputStream is = new ByteArrayInputStream(buf)) {
+            cache.put("testLargeFile", is);
+        }
+        assertArrayEquals(buf, cache.get("testLargeFile"));
     }
+
 }
