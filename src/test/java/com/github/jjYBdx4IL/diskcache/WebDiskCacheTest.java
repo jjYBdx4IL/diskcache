@@ -1,5 +1,7 @@
 package com.github.jjYBdx4IL.diskcache;
 
+import java.io.IOException;
+import org.junit.AfterClass;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -16,6 +18,11 @@ public class WebDiskCacheTest {
     private static final Logger LOG = LoggerFactory.getLogger(WebDiskCacheTest.class);
     private static final WebDiskCache cache = new WebDiskCache(null, null, true);
 
+    @AfterClass
+    public static void afterClass() throws IOException {
+        cache.close();
+    }
+    
     @Test
     public void testWebGet() throws Exception {
         byte[] a = cache.get("https://www.google.com/");

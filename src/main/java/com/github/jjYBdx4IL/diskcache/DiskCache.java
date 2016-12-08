@@ -5,6 +5,7 @@ import com.github.jjYBdx4IL.diskcache.jpa.DiskCacheQueryFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -31,7 +32,7 @@ import org.slf4j.LoggerFactory;
  *
  * @author jjYBdx4IL
  */
-public class DiskCache {
+public class DiskCache implements Closeable {
 
     private static final Logger LOG = LoggerFactory.getLogger(DiskCache.class);
     public static final String DEFAULT_DB_NAME = "diskcachedb";
@@ -66,8 +67,8 @@ public class DiskCache {
      *
      * @param parentDir may be null. in that case databases get crated either below ~/.config/...DiskCache or
      * &lt;pwd>/target/...DiskCache if run as part of a maven test.
-     * @param dbName the database name identifying the database on disk, ie. the directory below parentDir
-     * where Derby stores the database's data. may be null, in which case the default "diskcachedb" is used.
+     * @param dbName the database name identifying the database on disk, ie. the directory below parentDir where Derby
+     * stores the database's data. may be null, in which case the default "diskcachedb" is used.
      */
     public DiskCache(File parentDir, String dbName) {
         this(parentDir, dbName, false);
@@ -189,7 +190,7 @@ public class DiskCache {
 
                 tx.begin();
             } else {
-                dce.data = Arrays.copyOf(buf, (int)size);
+                dce.data = Arrays.copyOf(buf, (int) size);
             }
 
             dce.createdAt = System.currentTimeMillis();
@@ -225,7 +226,7 @@ public class DiskCache {
             return baos.toByteArray();
         }
     }
-    
+
     /**
      *
      * @param key
@@ -260,5 +261,18 @@ public class DiskCache {
 
     public InputStream getStream(String key) throws IOException {
         return getStream(key, this.expiryMillis);
+    }
+
+    @Override
+    public void close() throws IOException {
+        if (em != null) {
+            em.close();
+            em = null;
+        }
+        if (emf != null) {
+            emf.close();
+            emf = null;
+        }
+        LOG.debug("closed");
     }
 }

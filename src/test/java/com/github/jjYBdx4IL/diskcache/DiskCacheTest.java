@@ -2,6 +2,7 @@ package com.github.jjYBdx4IL.diskcache;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import org.junit.AfterClass;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertNotNull;
@@ -19,6 +20,11 @@ public class DiskCacheTest {
     private static final Logger LOG = LoggerFactory.getLogger(DiskCacheTest.class);
     private static final DiskCache cache = new DiskCache(null, null, true);
 
+    @AfterClass
+    public static void afterClass() throws IOException {
+        cache.close();
+    }
+    
     @Test
     public void testSetExpirySecs() throws IOException {
         try {
