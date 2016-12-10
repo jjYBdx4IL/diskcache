@@ -14,6 +14,7 @@ import java.io.InputStream;
 import java.net.URL;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 
 import javax.persistence.EntityManager;
@@ -37,7 +38,7 @@ public class DiskCache implements Closeable {
     private static final Logger LOG = LoggerFactory.getLogger(DiskCache.class);
     public static final String DEFAULT_DB_NAME = "diskcachedb";
     public static final int MAX_KEY_LENGTH = 1024;
-    public static final long DEFAULT_EXPIRY_SECS = 86400;
+    public static final long DEFAULT_EXPIRY_SECS = 86400L;
     public static final String INVALID_DBNAME_CHARS = File.separatorChar + "/\\;:";
     // store every data file larger than this in its separate file on disk
     public static final long MAX_BLOB_SIZE = 32 * 1024;
@@ -108,10 +109,10 @@ public class DiskCache implements Closeable {
 
         final String dbLocation = new File(dbDir, "db").getAbsolutePath().replaceAll(":", "\\:");
 
-        props.put("hibernate.hbm2ddl.auto", "create");
-        props.put("hibernate.show_sql", "true");
+        props.put("hibernate.hbm2ddl.auto", "update");
+        props.put("hibernate.show_sql", "false");
         props.put("javax.persistence.jdbc.driver", "org.h2.Driver");
-        props.put("javax.persistence.jdbc.url", "jdbc:h2:" + dbLocation);
+        props.put("javax.persistence.jdbc.url", "jdbc:h2:" + dbLocation + ";MVCC=TRUE");
 
         emf = Persistence.createEntityManagerFactory("DiskCachePU", props);
         em = emf.createEntityManager();
@@ -249,6 +250,9 @@ public class DiskCache implements Closeable {
 
         final long notBefore = System.currentTimeMillis() - _expiryMillis;
         if (_expiryMillis >= 0L && dce.createdAt < notBefore) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug(String.format(Locale.ROOT, "entry %d seconds too old - %s", (notBefore-dce.createdAt)/1000L, key));
+            }
             return null;
         }
 
