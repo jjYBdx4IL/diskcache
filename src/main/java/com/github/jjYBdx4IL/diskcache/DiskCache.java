@@ -8,6 +8,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -30,6 +31,28 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
+ * This class uses an embedded, disk-backed H2 database to implement a thread-safe, local and persistent
+ * cache for raw data. Small chunks of data are stored inside the database for speed, larger chunks are stored
+ * in separate files outside the database. This allows for the storage of chunks with sizes only limited by
+ * available storage space.
+ * <p>
+ * How we ensure <b>thread safety</b> regarding data integrity:
+ * <ul>
+ * <li> Data integrity is of no concern in cases where the entire data tuple is stored in the database and
+ * therefore handled entirely by the database.
+ * <li> We only need to care about data integrity when storing data in separate files outside the database.
+ * Here we need to care about two situations: storing and deleting a data tuple.
+ * <li> We trivialize the storage case by allowing for the storage of duplicates, ie. parallel storage of the
+ * same key. When retrieving data, we will always get the latest tuple (or a random one when the timestamps
+ * are equal).
+ * <li> Deletion of files on disk: files stored on disk are named/identified by the main table's sequence id,
+ * ie. we will never re-use a file's name. That prevents race conditions that could occur when reading a
+ * file's database entry and subsequently accessing the contents on disk -- contents which could have been
+ * replaced by something entirely different in the meantime. The non-reuse of file names relieves us from having
+ * to synchronize (flushing) the directory containing the big files.
+ * </ul>
+ * <p>
+ * <b>Pruning</b>: tbd.
  *
  * @author jjYBdx4IL
  */
@@ -60,16 +83,12 @@ public class DiskCache implements Closeable {
 
     protected final Map<String, String> props = new HashMap<>();
     protected EntityManagerFactory emf = null;
-    protected EntityManager em = null;
-    protected final DiskCacheQueryFactory diskCacheQueryFactory;
 
     /**
-     *
-     *
      * @param parentDir may be null. in that case databases get crated either below ~/.config/...DiskCache or
      * &lt;pwd>/target/...DiskCache if run as part of a maven test.
-     * @param dbName the database name identifying the database on disk, ie. the directory below parentDir where Derby
-     * stores the database's data. may be null, in which case the default "diskcachedb" is used.
+     * @param dbName the database name identifying the database on disk, ie. the directory below parentDir
+     * where Derby stores the database's data. may be null, in which case the default "diskcachedb" is used.
      */
     public DiskCache(File parentDir, String dbName) {
         this(parentDir, dbName, false);
@@ -110,13 +129,11 @@ public class DiskCache implements Closeable {
         final String dbLocation = new File(dbDir, "db").getAbsolutePath().replaceAll(":", "\\:");
 
         props.put("hibernate.hbm2ddl.auto", "update");
-        props.put("hibernate.show_sql", "false");
+        props.put("hibernate.show_sql", Boolean.toString(LOG.isTraceEnabled()));
         props.put("javax.persistence.jdbc.driver", "org.h2.Driver");
         props.put("javax.persistence.jdbc.url", "jdbc:h2:" + dbLocation + ";MVCC=TRUE");
 
         emf = Persistence.createEntityManagerFactory("DiskCachePU", props);
-        em = emf.createEntityManager();
-        diskCacheQueryFactory = new DiskCacheQueryFactory(em);
 
         LOG.info("started.");
     }
@@ -160,17 +177,21 @@ public class DiskCache implements Closeable {
         long size = IOUtils.read(input, buf);
 
         DiskCacheEntry dce;
-        TypedQuery<DiskCacheEntry> results = diskCacheQueryFactory.getByUrlQuery(key);
+
+        final EntityManager em = emf.createEntityManager();
+        final DiskCacheQueryFactory queryFactory = new DiskCacheQueryFactory(em);
+
+        TypedQuery<DiskCacheEntry> results = queryFactory.getByUrlQuery(key);
         if (results.getResultList().isEmpty()) {
             dce = new DiskCacheEntry();
-            dce.url = key;
+            dce.setUrl(key);
         } else {
             dce = results.getResultList().get(0);
         }
 
-        dce.createdAt = 0L;
-        dce.data = null;
-        dce.size = -1L;
+        dce.setCreatedAt(0L);
+        dce.setData(null);
+        dce.setSize(-1L); // mark as unfinished
 
         EntityTransaction tx = em.getTransaction();
         try {
@@ -181,7 +202,7 @@ public class DiskCache implements Closeable {
                 em.persist(dce);
                 tx.commit();
 
-                File dataFile = new File(this.fileStorageDir, Long.toString(dce.id));
+                File dataFile = new File(this.fileStorageDir, Long.toString(dce.getId()));
                 try (FileOutputStream fos = new FileOutputStream(dataFile, false)) {
                     IOUtils.write(buf, fos);
                     size += IOUtils.copyLarge(input, fos);
@@ -191,11 +212,11 @@ public class DiskCache implements Closeable {
 
                 tx.begin();
             } else {
-                dce.data = Arrays.copyOf(buf, (int) size);
+                dce.setData(Arrays.copyOf(buf, (int) size));
             }
 
-            dce.createdAt = System.currentTimeMillis();
-            dce.size = size;
+            dce.setCreatedAt(System.currentTimeMillis());
+            dce.setSize(size);
             em.persist(dce);
             tx.commit();
 
@@ -233,15 +254,17 @@ public class DiskCache implements Closeable {
      * @param key
      * @param _expiryMillis -1 or less to ignore expiration
      * @return
-     * @throws IOException
      */
-    public InputStream getStream(String key, long _expiryMillis) throws IOException {
+    public InputStream getStream(String key, long _expiryMillis) {
 
         if (key == null || key.length() > MAX_KEY_LENGTH) {
             throw new IllegalArgumentException();
         }
 
-        TypedQuery<DiskCacheEntry> results = diskCacheQueryFactory.getByUrlQuery(key);
+        final EntityManager em = emf.createEntityManager();
+        final DiskCacheQueryFactory queryFactory = new DiskCacheQueryFactory(em);
+
+        TypedQuery<DiskCacheEntry> results = queryFactory.getByUrlQuery(key);
         if (results.getResultList().isEmpty()) {
             return null;
         }
@@ -249,30 +272,30 @@ public class DiskCache implements Closeable {
         DiskCacheEntry dce = results.getResultList().get(0);
 
         final long notBefore = System.currentTimeMillis() - _expiryMillis;
-        if (_expiryMillis >= 0L && dce.createdAt < notBefore) {
+        if (_expiryMillis >= 0L && dce.getCreatedAt() < notBefore) {
             if (LOG.isDebugEnabled()) {
-                LOG.debug(String.format(Locale.ROOT, "entry %d seconds too old - %s", (notBefore-dce.createdAt)/1000L, key));
+                LOG.debug(String.format(Locale.ROOT, "entry %d seconds too old - %s", (notBefore - dce.getCreatedAt()) / 1000L, key));
             }
             return null;
         }
 
-        if (dce.data == null) {
-            return new FileInputStream(new File(this.fileStorageDir, Long.toString(dce.id)));
+        if (dce.getData() == null) {
+            try {
+                return new FileInputStream(new File(this.fileStorageDir, Long.toString(dce.getId())));
+            } catch (FileNotFoundException ex) {
+                return null;
+            }
         } else {
-            return new ByteArrayInputStream(dce.data);
+            return new ByteArrayInputStream(dce.getData());
         }
     }
 
-    public InputStream getStream(String key) throws IOException {
+    public InputStream getStream(String key) {
         return getStream(key, this.expiryMillis);
     }
 
     @Override
     public void close() throws IOException {
-        if (em != null) {
-            em.close();
-            em = null;
-        }
         if (emf != null) {
             emf.close();
             emf = null;

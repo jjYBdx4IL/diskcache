@@ -6,7 +6,7 @@
     <version>1.0-SNAPSHOT</version>
     
     <name>DiskCache</name>
-    <description>persistent cache using a disk-backed Derby database for storage</description>
+    <description>persistent cache using a disk-backed H2 database for storage</description>
     <url>https://github.com/jjYBdx4IL/diskcache</url>
     <inceptionYear>2016</inceptionYear>
 

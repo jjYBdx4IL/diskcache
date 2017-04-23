@@ -22,11 +22,13 @@ public class DiskCacheQueryFactory {
     public TypedQuery<DiskCacheEntry> getByUrlQuery(String url) {
         final CriteriaBuilder cb = em.getCriteriaBuilder();
         final CriteriaQuery<DiskCacheEntry> criteriaQuery = cb.createQuery(DiskCacheEntry.class);
-        final Root<DiskCacheEntry> userRoot = criteriaQuery.from(DiskCacheEntry.class);
+        final Root<DiskCacheEntry> root = criteriaQuery.from(DiskCacheEntry.class);
 
-        Predicate p1 = cb.equal(userRoot.get(DiskCacheEntry_.url), url);
-        Predicate p2 = cb.ge(userRoot.get(DiskCacheEntry_.size), 0);
-        return em.createQuery(criteriaQuery.where(cb.and(p1, p2)));
+        Predicate p1 = cb.equal(root.get(DiskCacheEntry_.url), url);
+        Predicate p2 = cb.ge(root.get(DiskCacheEntry_.size), 0);
+        criteriaQuery.where(cb.and(p1, p2));
+        criteriaQuery.orderBy(cb.desc(root.get(DiskCacheEntry_.createdAt)));
+        return em.createQuery(criteriaQuery);
     }
 
 }
